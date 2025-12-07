@@ -23,6 +23,7 @@ class ToolBarWidget(QtWidgets.QWidget):
         # =============================
         # サイズ関連
         # =============================
+        self.bg_color = QtGui.QColor(255, 255, 255)
         self.size_preset = QtWidgets.QComboBox()
         self.size_preset.addItems(SIZE_PRESETS.keys())
 
@@ -59,26 +60,24 @@ class ToolBarWidget(QtWidgets.QWidget):
         self.layout_combo = QtWidgets.QComboBox()
         self.layout_combo.addItems(LAYOUT_PRESETS.keys())
 
-        self.rotate_btn_plus = QtWidgets.QPushButton("90°回転")
-        self.rotate_btn_minus = QtWidgets.QPushButton("-90°回転")
-        self.save_layout_button = QtWidgets.QPushButton("レイアウト保存")
-        self.save_layout_button.clicked.connect(self.save_layout_clicked.emit)
-        self.load_layout_button = QtWidgets.QPushButton("レイアウト読込")
-        self.load_layout_button.clicked.connect(self.load_layout_clicked.emit)
-        self.batch_import_button = QtWidgets.QPushButton("一括読み込み")
-        self.batch_import_button.clicked.connect(self.batch_import_clicked.emit)
+        # self.rotate_btn_plus = QtWidgets.QPushButton("90°回転")
+        # self.rotate_btn_minus = QtWidgets.QPushButton("-90°回転")
+        # self.save_layout_button = QtWidgets.QPushButton("レイアウト保存")
+        # self.save_layout_button.clicked.connect(self.save_layout_clicked.emit)
+        # self.load_layout_button = QtWidgets.QPushButton("レイアウト読込")
+        # self.load_layout_button.clicked.connect(self.load_layout_clicked.emit)
+        # self.batch_import_button = QtWidgets.QPushButton("一括読み込み")
+        # self.batch_import_button.clicked.connect(self.batch_import_clicked.emit)
 
         self.bg_color_btn = QtWidgets.QPushButton("背景色")
         self.bg_color_btn.clicked.connect(self._choose_color)
-        self.rotate_btn_plus.clicked.connect(lambda: self.rotate_changed.emit(90))
-        self.rotate_btn_minus.clicked.connect(lambda: self.rotate_changed.emit(-90))
+        # self.rotate_btn_plus.clicked.connect(lambda: self.rotate_changed.emit(90))
+        # self.rotate_btn_minus.clicked.connect(lambda: self.rotate_changed.emit(-90))
 
         v_layout = QtWidgets.QVBoxLayout()
         v_layout.setContentsMargins(0, 0, 0, 0)
         v_layout.setSpacing(2)
         h_layout1 = QtWidgets.QHBoxLayout()
-        h_layout2 = QtWidgets.QHBoxLayout()
-        h_layout3 = QtWidgets.QHBoxLayout()
 
         h_layout1.setContentsMargins(10, 0, 10, 0)
         h_layout1.setSpacing(3)
@@ -87,34 +86,19 @@ class ToolBarWidget(QtWidgets.QWidget):
         h_layout1.addWidget(self.size1_spin)
         h_layout1.addWidget(self.size2_spin)
         h_layout1.addWidget(self.size_switch_cb)
+        h_layout1.addWidget(QtWidgets.QLabel("レイアウト:"))
+        h_layout1.addWidget(self.layout_combo)
+        h_layout1.addWidget(QtWidgets.QLabel("余白(px):"))
+        h_layout1.addWidget(self.space_margin_spin)
+        h_layout1.addWidget(QtWidgets.QLabel("上下の余白(px):"))
+        h_layout1.addWidget(self.top_under_margin_spin)
+        h_layout1.addWidget(QtWidgets.QLabel("横の余白(px):"))
+        h_layout1.addWidget(self.side_margin_spin)
+        h_layout1.addWidget(self.bg_color_btn)
         h_layout1.addStretch(1)
-
-        h_layout2.setContentsMargins(10, 0, 10, 0)
-        h_layout2.setSpacing(3)
-        h_layout2.addWidget(QtWidgets.QLabel("レイアウト:"))
-        h_layout2.addWidget(self.layout_combo)
-        h_layout2.addWidget(QtWidgets.QLabel("余白(px):"))
-        h_layout2.addWidget(self.space_margin_spin)
-        h_layout2.addWidget(QtWidgets.QLabel("上下の余白(px):"))
-        h_layout2.addWidget(self.top_under_margin_spin)
-        h_layout2.addWidget(QtWidgets.QLabel("横の余白(px):"))
-        h_layout2.addWidget(self.side_margin_spin)
-        h_layout2.addStretch(1)
-
-        h_layout3.setContentsMargins(10, 0, 10, 0)
-        h_layout3.setSpacing(3)
-        h_layout3.addWidget(self.rotate_btn_minus)
-        h_layout3.addWidget(self.rotate_btn_plus)
-        h_layout3.addWidget(self.bg_color_btn)
-        h_layout3.addWidget(self.save_layout_button)
-        h_layout3.addWidget(self.load_layout_button)
-        h_layout3.addWidget(self.batch_import_button)
-        h_layout3.addStretch(1)
 
         self.setLayout(v_layout)
         v_layout.addLayout(h_layout1)
-        v_layout.addLayout(h_layout2)
-        v_layout.addLayout(h_layout3)
         self.size1_spin.valueChanged.connect(self._change_size)
         self.size2_spin.valueChanged.connect(self._change_size)
         self.space_margin_spin.valueChanged.connect(self.change_margin)
@@ -151,8 +135,9 @@ class ToolBarWidget(QtWidgets.QWidget):
         # type: () -> None
         """背景色選択ダイアログを表示する
         """
-        color = QtWidgets.QColorDialog.getColor()
+        color = QtWidgets.QColorDialog.getColor(initial=self.bg_color)
         if color.isValid():
+            self.bg_color = color
             self.bg_color_changed.emit(color)
 
     def change_margin(self):
@@ -182,7 +167,11 @@ class ToolBarWidget(QtWidgets.QWidget):
         # type: () -> dict
         """現在の設定値を辞書で取得する
         """
+        r_color = self.bg_color.toRgb().red()
+        g_color = self.bg_color.toRgb().green()
+        b_color = self.bg_color.toRgb().blue()
         context = {
+            'bg_color': (r_color, g_color, b_color),
             'size_preset': self.size_preset.currentText(),
             "size1": self.size1_spin.value(),
             "size2": self.size2_spin.value(),
@@ -198,6 +187,8 @@ class ToolBarWidget(QtWidgets.QWidget):
         # type: (dict) -> None
         """設定値を辞書から読み込む
         """
+        self.bg_color = QtGui.QColor(*context.get("bg_color", (255, 255, 255)))
+        self.bg_color_changed.emit(self.bg_color)
         self.size_preset.setCurrentText(context.get("size_preset", "A4 3508 x 2480 px (300 DPI)"))
         self.size1_spin.setValue(context.get("size1", 3508))
         self.size2_spin.setValue(context.get("size2", 2480))

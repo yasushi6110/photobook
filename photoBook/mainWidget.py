@@ -2,11 +2,15 @@
 """
 Copyright 2024, YAMAGUCHI Yasushi
 """
+import json
 from PySide6 import QtWidgets, QtGui
 import os
+from pathlib import Path
 from photoBook.define import *
 from photoBook.toolBarWidget import ToolBarWidget
 from photoBook.photoCollageView import PhotoCollageView as PhotoCollageWidget
+ROOT_PATH = Path(__file__).parent.parent
+CONFIG_FILE = ROOT_PATH / "photo_book_config.json"
 
 
 class PhotoBookApp(QtWidgets.QMainWindow):
@@ -19,15 +23,7 @@ class PhotoBookApp(QtWidgets.QMainWindow):
         self._setup_gui()
 
     def update(self):
-        # size = self.input_widget.get_attr("long_side_px")
-        # margin = self.input_widget.get_attr("margin_px")
-        # layout_name = self.input_widget.get_attr("layout")
         self.input_widget._change_size()
-        # self.input_widget._choose_color()
-        # self.photo_widget._load_layout(layout_name)
-        # self.photo_widget.set_canvas_by_long_side(size, self.photo_widget.portrait)
-        # self.photo_widget.set_canvas_size
-        # self.photo_widget.set_margin(margin)
         self.photo_widget.draw_layout()
 
     def set_image(self, image_path_list):
@@ -49,27 +45,32 @@ class PhotoBookApp(QtWidgets.QMainWindow):
             self.photo_widget.export_image(path)
             QtWidgets.QMessageBox.information(self, "保存完了", f"保存しました:\n{path}")
 
-    def save_layout(self):
-        # type: () -> None
+    def save_layout(self, config=False):
+        # type: (bool) -> None
         """レイアウトを保存する
         """
-        file_path = QtWidgets.QFileDialog.getSaveFileName(self, "レイアウトを保存", "", "Layout Files (*.json)")
-        if os.path.isdir(os.path.dirname(file_path[0])):
+        if not config:
+            file_path = QtWidgets.QFileDialog.getSaveFileName(
+                self, "レイアウトを保存", "", "Layout Files (*.json)")
+        else:
+            file_path = [CONFIG_FILE.as_posix()]
+        if file_path and os.path.isdir(os.path.dirname(file_path[0])):
             context = {
                 'input_context': self.input_widget.context(),
                 'photo_context': self.photo_widget.context()
             }
-            import json
             with open(file_path[0], "w", encoding="utf-8") as f:
                 json.dump(context, f, indent=4, ensure_ascii=False)
 
-    def load_layout(self):
-        # type: () -> None
+    def load_layout(self, config=False):
+        # type: (bool) -> None
         """レイアウトを読み込む
         """
-        file_path = QtWidgets.QFileDialog.getOpenFileName(self, "レイアウトを読み込む", "", "Layout Files (*.json)")
+        if not config:
+            file_path = QtWidgets.QFileDialog.getOpenFileName(self, "レイアウトを読み込む", "", "Layout Files (*.json)")
+        else:
+            file_path = [CONFIG_FILE.as_posix()]
         if file_path and os.path.isfile(file_path[0]):
-            import json
             with open(file_path[0], "r", encoding="utf-8") as f:
                 context = json.load(f)
                 self.input_widget.set_context(context.get('input_context', {}))
@@ -115,9 +116,31 @@ class PhotoBookApp(QtWidgets.QMainWindow):
         self.input_widget.batch_import_clicked.connect(self.batch_import)
 
         menu = self.menuBar().addMenu("ファイル")
-        save_action = QtGui.QAction("画像を保存", self)
-        save_action.triggered.connect(self.save_image)
-        menu.addAction(save_action)
+        export_image_action = QtGui.QAction("画像を出力する", self)
+        export_image_action.triggered.connect(self.save_image)
+        save_layout_action = QtGui.QAction("レイアウトを保存する", self)
+        save_layout_action.triggered.connect(self.save_layout)
+        load_layout_action = QtGui.QAction("レイアウトを読み込む", self)
+        load_layout_action.triggered.connect(self.load_layout)
+        bach_import_action = QtGui.QAction("指定したディレクトリーの画像を登録する", self)
+        bach_import_action.triggered.connect(self.batch_import)
+        menu.addAction(export_image_action)
+        menu.addSeparator()
+        menu.addAction(save_layout_action)
+        menu.addAction(load_layout_action)
+        menu.addSeparator()
+        menu.addAction(bach_import_action)
+        self.input_widget.set_context({})
+
+    def showEvent(self, event):
+        print('Show: kajsdflkajsdfl;kasf')
+        self.load_layout(True)
+        return super().showEvent(event)
+
+    def closeEvent(self, event):
+        print('Close kajsdflkajsdfl;kasf')
+        self.save_layout(True)
+        return super().closeEvent(event)
 
 
 if __name__ == "__main__":
@@ -125,4 +148,5 @@ if __name__ == "__main__":
     win = PhotoBookApp()
     win.resize(700, 500)
     win.show()
+    win.update()
     app.exec()
