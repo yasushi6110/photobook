@@ -86,13 +86,18 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
         self._dragging = False
         self._ctrl_drag = False
         self._last_mouse_pos = QtCore.QPointF()
+        self._is_selected = False
+        self._is_drop_target = False
+        self._dpi = None
         self.update_from_block(scene_rect)
         self.setup_gui()
 
     def setup_gui(self):
         # type: () -> None
         """GUI設定"""
+        # Drag & Drop を受け入れる
         self.setAcceptDrops(True)
+        # 自身が選択できるようにする
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         self.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
 
@@ -148,11 +153,13 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
 
             # Pillow → QPixmap 変換
             qimg = QtGui.QImage(img.tobytes("raw", "RGBA"), img.width, img.height, QtGui.QImage.Format_RGBA8888)
+
+
             pix = QtGui.QPixmap.fromImage(qimg)
 
             # 中心配置 + offset
-            cx = round(self.rect.center().x() - pix.width() / 2 + self.block.offset_x)
-            cy = round(self.rect.center().y() - pix.height() / 2 + self.block.offset_y)
+            cx = round(self.rect.center().x() - pix.width() / 2 + self.block.offset_x * self.parent_view.render_width)
+            cy = round(self.rect.center().y() - pix.height() / 2 + self.block.offset_y * self.parent_view.render_height)
             painter.drawPixmap(QtCore.QPointF(cx, cy), pix)
         else:
             # 画像を保存する場合は、BGカラーで塗りつぶす
@@ -164,20 +171,32 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
         # =============================
         # 選択していた場合の枠線の描画
         # =============================
-        if self.isSelected():
+        if self._is_selected:
             painter.setRenderHint(QtGui.QPainter.Antialiasing, False)  # アンチエイリアスを無効化
             painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 0), 10))
+        elif self._is_drop_target:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, False)  # アンチエイリアスを無効化
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 100, 100), 10))
         else:
             painter.setPen(QtCore.Qt.NoPen)  # ペンを無効化
         painter.drawRect(self.rect)
         painter.restore()
 
+    # =================================
+    # Mouse Events
+    # =================================
     def mousePressEvent(self, event):
+        self.parent_view.clear_selection()
+        self._is_selected = True
         if event.button() == QtCore.Qt.LeftButton:
             self._dragging = True
             self._ctrl_drag = bool(event.modifiers() & QtCore.Qt.ControlModifier)
             self._last_mouse_pos = event.scenePos()
-            self.setSelected(True)
+            if self._ctrl_drag:
+                self.scene().clearSelection()
+                # self.parent_view.clearFocus()
+            # self.setSelected(True)
+        self.update()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -188,8 +207,8 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
 
         if self._ctrl_drag:
             # Ctrl+Drag → 内部画像移動
-            self.block.offset_x += delta.x()
-            self.block.offset_y += delta.y()
+            self.block.offset_x += delta.x() / self.parent_view.render_width
+            self.block.offset_y += delta.y() / self.parent_view.render_height
             self.update()
         else:
             # 通常ドラッグ → D&D入れ替え
@@ -204,8 +223,31 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
         self._dragging = False
         super().mouseReleaseEvent(event)
 
+    def wheelEvent(self, event):
+        # type: (QtGui.QGraphicsSceneWheelEvent) -> None
+        """ホイールでスケール"""
+        ctrl_drag = bool(event.modifiers() & QtCore.Qt.ControlModifier)
+        if ctrl_drag:
+            delta = 0
+            # Qt6 では angleDelta が無いので、代替で delta() を使用
+            if hasattr(event, "delta"):
+                delta = event.delta()
+            elif hasattr(event, "angleDelta"):  # 念のためPyQt互換
+                delta = event.angleDelta().y()
+            if delta > 0:
+                self.block.scale *= 1.05
+            else:
+                self.block.scale *= 0.95
+            self.update()
+
+    # =================================
+    # Drag Drop Events
+    # =================================
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() or event.mimeData().hasText():
+            self.parent_view.clear_selection(drop=True)
+            self._is_drop_target = True
+            self.update()
             event.acceptProposedAction()
 
     def dropEvent(self, event):
@@ -234,22 +276,10 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
                     break
             event.acceptProposedAction()
 
-    def wheelEvent(self, event):
-        # type: (QtGui.QGraphicsSceneWheelEvent) -> None
-        """ホイールでスケール"""
-        ctrl_drag = bool(event.modifiers() & QtCore.Qt.ControlModifier)
-        if ctrl_drag:
-            delta = 0
-            # Qt6 では angleDelta が無いので、代替で delta() を使用
-            if hasattr(event, "delta"):
-                delta = event.delta()
-            elif hasattr(event, "angleDelta"):  # 念のためPyQt互換
-                delta = event.angleDelta().y()
-            if delta > 0:
-                self.block.scale *= 1.05
-            else:
-                self.block.scale *= 0.95
-            self.update()
+        self.parent_view.clear_selection()
+        self.parent_view.clear_selection(drop=True)
+        self._is_selected = True
+        self.update()
 
 
 class PhotoCollageView(QtWidgets.QGraphicsView):
@@ -263,6 +293,8 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         self.setResizeAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
 
         self.render_flag = False
+        self.render_width = 0
+        self.render_height = 0
         """Export時に高解像度画像を使用するかどうかのフラグ"""
         self.bg_color = QtGui.QColor("white")
         self.space_margin_px = 10
@@ -309,21 +341,23 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         blk.image_path = image_path
         blk.update_image()
 
-    def draw_layout(self, canvas_width=None, canvas_height=None):
+    def draw_layout(self, render_width=None, render_height=None):
         # type: (int ,int ) -> None
         """レイアウトを描画"""
         if not self.scene():
             return
         self.scene().clear()
 
+        self.render_width = render_width
+        self.render_height = render_height
         rate = self.canvas_height_px / self.canvas_width_px
-        if not canvas_width and not canvas_height:
-            canvas_width = PREVIEW_CANVAS_WIDTH
-            canvas_height = int(canvas_width * rate)
+        if not render_width and not render_height:
+            self.render_width = PREVIEW_CANVAS_WIDTH
+            self.render_height = int(self.render_width * rate)
 
         yohaku = 20000
-        base_scene_rect = QtCore.QRectF(-yohaku, -yohaku, canvas_width+yohaku*2, canvas_height+yohaku*2)
-        scene_rect = QtCore.QRectF(0, 0, canvas_width, canvas_height)
+        base_scene_rect = QtCore.QRectF(-yohaku, -yohaku, self.render_width+yohaku*2, self.render_height+yohaku*2)
+        scene_rect = QtCore.QRectF(0, 0, self.render_width, self.render_height)
 
         self.scene().setSceneRect(scene_rect)
         self.setSceneRect(base_scene_rect)
@@ -342,7 +376,7 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         top_scale = (1.0 - top_under_margin * 2.0)
 
         # QGraphicsRectItemを作成
-        rect_item = QtWidgets.QGraphicsRectItem(0, 0, canvas_width, canvas_height)
+        rect_item = QtWidgets.QGraphicsRectItem(0, 0, self.render_width, self.render_height)
 
         # 色を設定
         brush = QtGui.QBrush(self.bg_color)
@@ -383,9 +417,15 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
             if isinstance(item, PhotoBlockItem):
                 item.block.update_image()
             item.setSelected(False)
+        self.clear_selection()
+        self.clear_selection(drop=True)
 
         img = QtGui.QImage(int(self.canvas_width_px), int(self.canvas_height_px), QtGui.QImage.Format_RGB32)
         img.fill(self.bg_color)
+        dots_per_meter = int(self._dpi / 0.0254)
+        img.setDotsPerMeterX(dots_per_meter)
+        img.setDotsPerMeterY(dots_per_meter)
+
         painter = QtGui.QPainter(img)
         self.scene().render(painter)
         painter.end()
@@ -399,9 +439,10 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         self.side_margin_px = side_margin_px
         self.draw_layout()
 
-    def set_canvas_size(self, width_px, height_px):
+    def set_canvas_size(self, width_px, height_px, dpi):
         self.canvas_height_px = height_px
         self.canvas_width_px = width_px
+        self._dpi = dpi
         self.draw_layout()
 
     def set_layout(self, layout_name):
@@ -421,6 +462,18 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
                 blk.preview_img = blk.preview_img.rotate(rotation_degree, expand=True)
             blk.rotation = (blk.rotation - rotation_degree) % 360
             photo_brock_item.update()
+
+    def clear_selection(self, drop=False):
+        # type: (bool) -> None
+        """選択状態をクリア"""
+        for item in self.scene().items():
+            if isinstance(item, PhotoBlockItem):
+                if drop and item._is_drop_target:
+                    item._is_drop_target = False
+                    item.update()
+                elif not drop and item._is_selected:
+                    item._is_selected = False
+                    item.update()
 
     # =================================
     # Context
@@ -525,8 +578,10 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
 
         if action == right_rotate_action:
             under_item.block.rotation = (under_item.block.rotation + 90) % 360
+            under_item.update()
         elif action == left_rotate_action:
             under_item.block.rotation = (under_item.block.rotation - 90) % 360
+            under_item.update()
         elif action == reset_action:
             under_item.block.offset_x = 0
             under_item.block.offset_y = 0
@@ -534,13 +589,16 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
             if under_item.block.rotation not in [0, 180]:
                 under_item.block.scale = under_item.block.rot_90_scale
             under_item.block.update_image()
+            under_item.update()
         elif action == clear_image_action:
             under_item.block.image_path = None
             under_item.block.preview_img = None
             under_item.block.full_img = None
+            under_item.update()
         elif action in [a3_preview_action, a4_preview_action]:
             if not self.dpi:
-                screen = QtWidgets.QApplication.primaryScreen()
+                # screen = QtWidgets.QApplication.primaryScreen()
+                screen = screen_at_mouse()
                 dpi = screen.physicalDotsPerInch()  # 例: 96, 110, 144, 218など
                 set_canvas_scale = self.canvas_width_px / PREVIEW_CANVAS_WIDTH
                 canvas_dpi = get_a3_dpi(self.canvas_width_px)
@@ -552,7 +610,6 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         elif action is fit_window_action:
             self.fitInView(self.scene().sceneRect(), QtCore.Qt.KeepAspectRatio)
 
-        under_item.update()
 
     # =================================
     # Override Methods
@@ -617,6 +674,7 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
             item.update()
         return super().keyPressEvent(event)
 
+
 def get_a4_dpi(width_px):
     """A4ピクセルサイズからDPIを計算"""
     width_in = 297 / 25.4  # 297x210
@@ -629,3 +687,14 @@ def get_a3_dpi(width_px):
     width_in = 297 / 25.4  # 297x210
     dpi_x = width_px / width_in
     return dpi_x / 1.41
+
+
+def screen_at_mouse():
+    # type: () -> QtGui.QScreen | None
+    """マウスが乗っているスクリーンを取得する"""
+    pos = QtGui.QCursor.pos()  # マウスのグローバル座標 (QPoint)
+    for s in QtWidgets.QApplication.screens():
+        geo = s.geometry()  # QRect: スクリーンの位置とサイズ
+        if geo.contains(pos):
+            return s
+    return QtWidgets.QApplication.primaryScreen()  # マウスがどのスクリーンにも乗っていない場合

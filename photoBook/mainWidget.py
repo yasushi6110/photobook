@@ -23,7 +23,7 @@ class PhotoBookApp(QtWidgets.QMainWindow):
         self._setup_gui()
 
     def update(self):
-        self.input_widget._change_size()
+        # self.input_widget._change_size()
         self.photo_widget.draw_layout()
 
     def set_image(self, image_path_list):
@@ -105,7 +105,6 @@ class PhotoBookApp(QtWidgets.QMainWindow):
         layout.setStretch(0, 0)
         layout.setStretch(1, 1)
 
-        # self.input_widget.values_changed.connect(self.apply_settings)
         self.input_widget.canvas_size_changed.connect(self.photo_widget.set_canvas_size)
         self.input_widget.layout_changed.connect(self.photo_widget.set_layout)
         self.input_widget.margin_changed.connect(self.photo_widget.set_margin)
@@ -133,12 +132,10 @@ class PhotoBookApp(QtWidgets.QMainWindow):
         self.input_widget.set_context({})
 
     def showEvent(self, event):
-        print('Show: kajsdflkajsdfl;kasf')
         self.load_layout(True)
         return super().showEvent(event)
 
     def closeEvent(self, event):
-        print('Close kajsdflkajsdfl;kasf')
         self.save_layout(True)
         return super().closeEvent(event)
 
