@@ -13,7 +13,7 @@ import math
 from .define import *
 PREVIEW_MAX_SIZE = 512.0
 PREVIEW_CANVAS_WIDTH = 1900
-
+DRAG_ITEM = None
 
 class PhotoInfo:
     """画像ブロック情報"""
@@ -78,11 +78,13 @@ class PhotoInfo:
 
 
 class PhotoBlockItem(QtWidgets.QGraphicsItem):
+
     """セル単位のアイテム：内部画像の移動／回転／スケール対応"""
     def __init__(self, block: PhotoInfo, scene_rect: QtCore.QRectF, parent_view):
         super().__init__()
-        self.block = block
-        self.parent_view = parent_view  # type: PhotoCollageView
+        self._block = block
+        self._photo_block_items = []  # type: list[PhotoBlockItem]
+        self._parent_view = parent_view  # type: PhotoCollageView
         self._dragging = False
         self._ctrl_drag = False
         self._last_mouse_pos = QtCore.QPointF()
@@ -105,10 +107,10 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
         # type: (str) -> None
         """ブロック情報から矩形を更新
         """
-        x = scene_rect.width() * self.block.rect_ratio[0]
-        y = scene_rect.height() * self.block.rect_ratio[1]
-        w = scene_rect.width() * self.block.rect_ratio[2]
-        h = scene_rect.height() * self.block.rect_ratio[3]
+        x = scene_rect.width() * self._block.rect_ratio[0]
+        y = scene_rect.height() * self._block.rect_ratio[1]
+        w = scene_rect.width() * self._block.rect_ratio[2]
+        h = scene_rect.height() * self._block.rect_ratio[3]
         self.rect = QtCore.QRectF(x, y, w, h)
         self.prepareGeometryChange()
 
@@ -123,16 +125,16 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
         painter.fillRect(self.rect, QtGui.QColor(200, 200, 200))
         painter.setClipRect(self.rect)
 
-        render_image = self.block.preview_img
-        if self.parent_view.render_flag:
-            render_image = self.block.full_img
+        render_image = self._block.preview_img
+        if self._parent_view.export_flag:
+            render_image = self._block.full_img
 
         if render_image:
             img = render_image.convert("RGBA")
             iw, ih = img.size
 
             # スケール倍率を計算
-            ratio = max(self.rect.width() / iw, self.rect.height() / ih) * self.block.scale + 0.005
+            ratio = max(self.rect.width() / iw, self.rect.height() / ih) * self._block.scale + 0.005
 
             scaled_size = (int(iw * ratio), int(ih * ratio))
             img = img.resize(scaled_size, Image.BICUBIC)
@@ -149,24 +151,22 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
             # 縮小時のエイリアシング抑制: AREA
 
             # 回転（アスペクト比維持、中心基準）
-            img = img.rotate(-self.block.rotation, expand=True, resample=Image.BICUBIC)
+            img = img.rotate(-self._block.rotation, expand=True, resample=Image.BICUBIC)
 
             # Pillow → QPixmap 変換
             qimg = QtGui.QImage(img.tobytes("raw", "RGBA"), img.width, img.height, QtGui.QImage.Format_RGBA8888)
-
-
             pix = QtGui.QPixmap.fromImage(qimg)
 
             # 中心配置 + offset
-            cx = round(self.rect.center().x() - pix.width() / 2 + self.block.offset_x * self.parent_view.render_width)
-            cy = round(self.rect.center().y() - pix.height() / 2 + self.block.offset_y * self.parent_view.render_height)
+            cx = round(self.rect.center().x() - pix.width() / 2 + self._block.offset_x * self._parent_view.canvas_width)
+            cy = round(self.rect.center().y() - pix.height() / 2 + self._block.offset_y * self._parent_view.canvas_height)
             painter.drawPixmap(QtCore.QPointF(cx, cy), pix)
         else:
             # 画像を保存する場合は、BGカラーで塗りつぶす
-            if self.parent_view.render_flag:
-                painter.fillRect(self.rect, self.parent_view.bg_color)
+            if self._parent_view.export_flag:
+                painter.fillRect(self.rect, self._parent_view.bg_color)
             else:
-                painter.fillRect(self.rect, QtGui.QColor(*self.block.color))
+                painter.fillRect(self.rect, QtGui.QColor(*self._block.color))
 
         # =============================
         # 選択していた場合の枠線の描画
@@ -186,7 +186,8 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
     # Mouse Events
     # =================================
     def mousePressEvent(self, event):
-        self.parent_view.clear_selection()
+        global DRAG_ITEM
+        self._parent_view.clear_selection()
         self._is_selected = True
         if event.button() == QtCore.Qt.LeftButton:
             self._dragging = True
@@ -194,33 +195,37 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
             self._last_mouse_pos = event.scenePos()
             if self._ctrl_drag:
                 self.scene().clearSelection()
-                # self.parent_view.clearFocus()
-            # self.setSelected(True)
+            else:
+                DRAG_ITEM = self
         self.update()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        global DRAG_ITEM
         if not self._dragging:
+            DRAG_ITEM = None
             return
         delta = event.scenePos() - self._last_mouse_pos
         self._last_mouse_pos = event.scenePos()
 
         if self._ctrl_drag:
             # Ctrl+Drag → 内部画像移動
-            self.block.offset_x += delta.x() / self.parent_view.render_width
-            self.block.offset_y += delta.y() / self.parent_view.render_height
+            self._block.offset_x += delta.x() / self._parent_view.canvas_width
+            self._block.offset_y += delta.y() / self._parent_view.canvas_height
             self.update()
         else:
             # 通常ドラッグ → D&D入れ替え
-            drag = QtGui.QDrag(self.parent_view)
+            drag = QtGui.QDrag(self._parent_view)
             mime = QtCore.QMimeData()
-            mime.setText(self.block.image_path or "")
+            mime.setText(self._block.image_path or "")
             drag.setMimeData(mime)
             drag.exec(QtCore.Qt.MoveAction)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        global DRAG_ITEM
         self._dragging = False
+        DRAG_ITEM = None
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
@@ -235,88 +240,109 @@ class PhotoBlockItem(QtWidgets.QGraphicsItem):
             elif hasattr(event, "angleDelta"):  # 念のためPyQt互換
                 delta = event.angleDelta().y()
             if delta > 0:
-                self.block.scale *= 1.05
+                self._block.scale *= 1.05
             else:
-                self.block.scale *= 0.95
+                self._block.scale *= 0.95
             self.update()
+            return
+        return super().wheelEvent(event)
 
     # =================================
     # Drag Drop Events
     # =================================
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() or event.mimeData().hasText():
-            self.parent_view.clear_selection(drop=True)
+            self._parent_view.clear_selection(drop=True)
             self._is_drop_target = True
             self.update()
             event.acceptProposedAction()
 
     def dropEvent(self, event):
+        global DRAG_ITEM
         # === 外部画像ファイル ===
-        if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                path = url.toLocalFile()
-                if os.path.isfile(path) and path.lower().endswith(IMAGE_EXTS):
-                    self.block.image_path = path
-                    self.block.update_image()
-                    self.update()
-                    break
-            event.acceptProposedAction()
-            return
+        # if event.mimeData().hasUrls():
+        #     for url in event.mimeData().urls():
+        #         path = url.toLocalFile()
+        #         if os.path.isfile(path) and path.lower().endswith(IMAGE_EXTS):
+        #             self._block.image_path = path
+        #             self._block.update_image()
+        #             self.update()
+        #             break
+        #     event.acceptProposedAction()
+        #     return
 
         # === 内部D&D（画像入れ替え）===
         if event.mimeData().hasText():
             src_path = event.mimeData().text()
             if not src_path:
                 return
-            for item in self.parent_view.scene().items():
-                if isinstance(item, PhotoBlockItem) and item.block.image_path == src_path:
-                    self.block.switch_status(item.block)
-                    self.update()
-                    item.update()
-                    break
+            # for item in self.parent_view.scene().items():
+            #     if isinstance(item, PhotoBlockItem) and item.block.image_path == src_path:
+            #         self.block.switch_status(item.block)
+            #         self.update()
+            #         item.update()
+            #         break
+            item = DRAG_ITEM
+            if item and isinstance(item, PhotoBlockItem) and item._block.image_path == src_path:
+                self._block.switch_status(item._block)
+                self.update()
+                item.update()
             event.acceptProposedAction()
 
-        self.parent_view.clear_selection()
-        self.parent_view.clear_selection(drop=True)
+        self._parent_view.clear_selection()
+        self._parent_view.clear_selection(drop=True)
         self._is_selected = True
         self.update()
 
 
 class PhotoCollageView(QtWidgets.QGraphicsView):
 
-    def __init__(self, layout_name, long_side_px=3508, portrait=True):
+    def __init__(self):
         super().__init__()
+        self.blocks = []  # type: list[PhotoInfo]
+        """画像ブロック情報リスト"""
+        self.block_count = 1
+        """使用中のブロック数"""
+        self._photo_block_items = []  # type: list[PhotoBlockItem]
+        """現在保持しているPhotoBlockItemリスト"""
+        self.bg_color = QtGui.QColor("white")
+        """背景色"""
+        self.dpi = 20  # type: int
+        """出力解像度(DPI)"""
+        self.export_flag = False
+        """Export時に高解像度画像を使用するかどうかのフラグ"""
+        self.canvas_margin_width = 20000
+        self.canvas_margin_height = 20000
+        """パンしやすいようにするメインのキャンバスの周りの余白"""
+        self.canvas_width = 100
+        """編集時のキャンバス幅(px)"""
+        self.canvas_height = 100
+        """編集時のキャンバス高さ(px)"""
+        self.export_width = 100
+        """Export時の幅(px)"""
+        self.export_height = 1000
+        """Export時の高さ(px)"""
+        self.block_space_margin_px = 10
+        """ブロック間の余白(px)"""
+        self.top_under_margin_px = 10
+        """上下の余白(px)"""
+        self.side_margin_px = 10
+        """左右の余白(px)"""
+        self.wheel_zoom_flag = True
+        """ホイールズーム有効フラグ"""
         self.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.SmoothPixmapTransform)
         self.setAcceptDrops(True)
         self.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
-        self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
         self.setResizeAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
-
-        self.render_flag = False
-        self.render_width = 0
-        self.render_height = 0
-        """Export時に高解像度画像を使用するかどうかのフラグ"""
-        self.bg_color = QtGui.QColor("white")
-        self.space_margin_px = 10
-        self.top_under_margin_px = 10
-        self.side_margin_px = 10
-        self.portrait = portrait
-        self.long_side_px = long_side_px
-        self._update_canvas_size()
-        self._image_path_cache = [None] * 500  # type: list[str]
-        self.blocks = []  # type: list[PhotoInfo]
-        self.block_count = 1
-        self.dpi = None
         self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
         self.setTransform(QtGui.QTransform())  # スケールをリセット
         self.centerOn(0, 0)  # シーンの中心を初期化
 
+        # DefaultのScene
         scene = QtWidgets.QGraphicsScene(self)
         self.setScene(scene)
-        self.blocks = []
-        self._load_layout(layout_name)
-        self.draw_layout()
 
+        # ContextMenu
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
 
@@ -326,7 +352,7 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
     def get_selected_photo_brock_item(self):
         # type: () -> PhotoBlockItem
         for item in self.scene().items():
-            if isinstance(item, PhotoBlockItem) and item.isSelected():
+            if isinstance(item, PhotoBlockItem) and item._is_selected:
                 return item
         return None
 
@@ -341,50 +367,55 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         blk.image_path = image_path
         blk.update_image()
 
-    def draw_layout(self, render_width=None, render_height=None):
-        # type: (int ,int ) -> None
+    def draw_layout(self, export_flag=False, fit_window=True):
+        # type: (bool, bool) -> None
         """レイアウトを描画"""
-        if not self.scene():
-            return
+        # 後でポジションとスケールを再現できるように数値を保持
+        # scale = self.transform().m11()
+        # center = self.mapToScene(self.viewport().rect().center())
+
         self.scene().clear()
+        self.canvas_width = self.export_width
+        self.canvas_height = self.export_height
+        if not export_flag:
+            self.canvas_width = PREVIEW_CANVAS_WIDTH
+            rate = float(self.export_height) / float(self.export_width)
+            self.canvas_height = int(self.canvas_width * rate)
 
-        self.render_width = render_width
-        self.render_height = render_height
-        rate = self.canvas_height_px / self.canvas_width_px
-        if not render_width and not render_height:
-            self.render_width = PREVIEW_CANVAS_WIDTH
-            self.render_height = int(self.render_width * rate)
-
-        yohaku = 20000
-        base_scene_rect = QtCore.QRectF(-yohaku, -yohaku, self.render_width+yohaku*2, self.render_height+yohaku*2)
-        scene_rect = QtCore.QRectF(0, 0, self.render_width, self.render_height)
-
+        # Photoが登録されるシーンの大きさ
+        scene_rect = QtCore.QRectF(0, 0, self.canvas_width, self.canvas_height)
         self.scene().setSceneRect(scene_rect)
+
+        # キャンバスのパンをしやすくするために、大きめのシーンにする
+        base_scene_rect = QtCore.QRectF(
+            -self.canvas_margin_width, -self.canvas_margin_height,
+            self.canvas_width+self.canvas_margin_width*2, self.canvas_height+self.canvas_margin_height*2)
         self.setSceneRect(base_scene_rect)
+
+        # Background Color
         color = 160
         self.scene().setBackgroundBrush(QtGui.QColor(color, color, color, 255))
-        # self.scene().setBackgroundBrush(QtGui.QBrush(self.bg_color))
 
+        # 各スペースの値をpxから出力サイズを1とした場合に比率に治す
         margin_ratio_x = margin_ratio_y = 0
-        if self.space_margin_px > 0:
-            margin_ratio_x = self.space_margin_px / self.canvas_width_px
-            margin_ratio_y = self.space_margin_px / self.canvas_height_px
+        if self.block_space_margin_px > 0:
+            margin_ratio_x = self.block_space_margin_px / self.export_width
+            margin_ratio_y = self.block_space_margin_px / self.export_height
 
-        side_margin = self.side_margin_px / self.canvas_width_px
-        top_under_margin = self.top_under_margin_px / self.canvas_height_px
+        side_margin = self.side_margin_px / self.export_width
+        top_under_margin = self.top_under_margin_px / self.export_height
         side_scale = (1.0 - side_margin * 2.0)
         top_scale = (1.0 - top_under_margin * 2.0)
 
-        # QGraphicsRectItemを作成
-        rect_item = QtWidgets.QGraphicsRectItem(0, 0, self.render_width, self.render_height)
-
-        # 色を設定
+        # Photoの下地の色を決めるQGraphicsRectItemを作成し追加
         brush = QtGui.QBrush(self.bg_color)
+        rect_item = QtWidgets.QGraphicsRectItem(0, 0, self.canvas_width, self.canvas_height)
         rect_item.setBrush(brush)
-
-        # シーンに追加
         self.scene().addItem(rect_item)
 
+        self._photo_block_items.clear()
+
+        # Photoのブロックを追加
         for blk in self.blocks[:self.block_count]:
             # rect_ratio からマージン分を減算
             x, y, w, h = blk.init_rect_ratio[0:4]
@@ -397,32 +428,28 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
             w = w * side_scale
             h = h * top_scale
             blk.rect_ratio = (x, y, w, h)
-
             item = PhotoBlockItem(blk, scene_rect, self)
             self.scene().addItem(item)
+            self._photo_block_items.append(item)
 
-        # self.fitInView(scene_rect, QtCore.Qt.KeepAspectRatioByExpanding)
-        self.fitInView(scene_rect, QtCore.Qt.KeepAspectRatio)
-
-    def set_background_color(self, color):
-        self.bg_color = color
-        self.draw_layout()
+        if fit_window:
+            self.fitInView(scene_rect, QtCore.Qt.KeepAspectRatio)
 
     def export_image(self, out_path):
         # type: (str) -> None
-        self.render_flag = True
+        self.export_flag = True
         # self.export_scene(out_path)
-        self.draw_layout(self.canvas_width_px, self.canvas_height_px)
+        self.draw_layout(True)
         for item in  self.scene().items():
             if isinstance(item, PhotoBlockItem):
-                item.block.update_image()
+                item._block.update_image()
             item.setSelected(False)
         self.clear_selection()
         self.clear_selection(drop=True)
 
-        img = QtGui.QImage(int(self.canvas_width_px), int(self.canvas_height_px), QtGui.QImage.Format_RGB32)
+        img = QtGui.QImage(int(self.export_width), int(self.export_height), QtGui.QImage.Format_RGB32)
         img.fill(self.bg_color)
-        dots_per_meter = int(self._dpi / 0.0254)
+        dots_per_meter = int(self.dpi / 0.0254)
         img.setDotsPerMeterX(dots_per_meter)
         img.setDotsPerMeterY(dots_per_meter)
 
@@ -430,32 +457,16 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         self.scene().render(painter)
         painter.end()
         img.save(out_path)
-        self.render_flag = False
-        self.draw_layout()
-
-    def set_margin(self, space_margin_px, top_under_margin_px, side_margin_px):
-        self.space_margin_px = space_margin_px
-        self.top_under_margin_px = top_under_margin_px
-        self.side_margin_px = side_margin_px
-        self.draw_layout()
-
-    def set_canvas_size(self, width_px, height_px, dpi):
-        self.canvas_height_px = height_px
-        self.canvas_width_px = width_px
-        self._dpi = dpi
-        self.draw_layout()
-
-    def set_layout(self, layout_name):
-        self._load_layout(layout_name)
-        self.scene().clear()
-        self.draw_layout()
+        self.export_flag = False
+        self.draw_layout(fit_window=False)
 
     def rotate_selected_image(self, rotation_degree):
         # type: (int) -> None
-        """選択中の画像を回転"""
+        """選択中の画像を回転
+        """
         photo_brock_item = self.get_selected_photo_brock_item()
         if photo_brock_item:
-            blk = photo_brock_item.block
+            blk = photo_brock_item._block
             if blk.preview_img:
                 blk.preview_img = blk.preview_img.rotate(rotation_degree, expand=True)
             if blk.preview_img:
@@ -466,20 +477,29 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
     def clear_selection(self, drop=False):
         # type: (bool) -> None
         """選択状態をクリア"""
-        for item in self.scene().items():
-            if isinstance(item, PhotoBlockItem):
-                if drop and item._is_drop_target:
-                    item._is_drop_target = False
-                    item.update()
-                elif not drop and item._is_selected:
-                    item._is_selected = False
-                    item.update()
+        for item in self._photo_block_items:
+            if drop and item._is_drop_target:
+                item._is_drop_target = False
+                item.update()
+            elif not drop and item._is_selected:
+                item._is_selected = False
+                item.update()
+
+    def set_block_layout(self, layout_name, brock_ratio_list):
+        # type: (str, list[list[float]]) -> None
+        """レイアウトを読み込む"""
+        for id, rect_ratio in enumerate(brock_ratio_list):
+            if id >= len(self.blocks):
+                self.blocks.append(PhotoInfo())
+            self.blocks[id].update_rect_ratio(rect_ratio)
+            self.blocks[id].update_attr_from_layout(layout_name)
+        self.block_count = len(brock_ratio_list)
 
     # =================================
     # Context
     # =================================
     def context(self):
-        # type: (str) -> None
+        # type: (str) -> list[dict]
         """現在のレイアウトをJSON保存"""
         layout_data = []
         for blk in self.blocks[:self.block_count]:
@@ -494,9 +514,9 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         return layout_data
 
     def set_context(self, context):
-        # type: (str) -> None
+        # type: (list[dict]) -> None
         """JSONレイアウトを読み込み"""
-        self.block_count = len(context)
+        # self.block_count = len(context)
         for id, blk_data in enumerate(context):
             if id >= len(self.blocks):
                 self.blocks.append(PhotoInfo())
@@ -508,35 +528,11 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
             blk.rotation = blk_data.get("rotation", 0)
             blk.image_path = blk_data.get("file_path", None)
             blk.update_image()
-        self.draw_layout()
+        self.draw_layout(fit_window=False)
 
     # =================================
     # Private Methods
     # =================================
-    def _update_canvas_size(self):
-        a4_ratio = math.sqrt(2)
-        if self.portrait:
-            self.canvas_height_px = self.long_side_px
-            self.canvas_width_px = int(self.long_side_px / a4_ratio)
-        else:
-            self.canvas_width_px = self.long_side_px
-            self.canvas_height_px = int(self.long_side_px / a4_ratio)
-        self.draw_layout()
-
-    def _load_layout(self, layout_name):
-        # type: (str) -> None
-        """レイアウトを読み込む"""
-        # if layout_name in SIZE_SWITCH_LAYOUT:
-        #     self.portrait = True
-        # self._update_canvas_size()
-
-        for id, rect_ratio in enumerate(LAYOUT_PRESETS[layout_name]):
-            if id >= len(self.blocks):
-                self.blocks.append(PhotoInfo())
-            self.blocks[id].update_rect_ratio(rect_ratio)
-            self.blocks[id].update_attr_from_layout(layout_name)
-        self.block_count = len(LAYOUT_PRESETS[layout_name])
-
     def _get_mouse_under_item(self):
         # type: () -> PhotoBlockItem | None
         """マウス下のアイテムを取得"""
@@ -570,46 +566,86 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
             menu.addAction(clear_image_action)
 
         menu.addSeparator()
-        a3_preview_action = menu.addAction("A3 プレビュー(等倍表示)")
-        a4_preview_action = menu.addAction("A4 プレビュー(等倍表示)")
-        fit_window_action = menu.addAction("Windowサイズにフィット")
+        # a3_preview_action = menu.addAction("A3 プレビュー(等倍表示)")
+        # a4_preview_action = menu.addAction("A4 プレビュー(等倍表示)")
+        preview_size_action = menu.addAction("印刷サイズで画面に表示する")
+        fit_window_action = menu.addAction("Windowサイズにフィットさせる")
+        menu.addSeparator()
+        clear_duplicate_images_action = menu.addAction("重複している画像をクリア")
+        clear_all_image_action = menu.addAction("全ての画像をクリア")
 
         action = menu.exec(self.mapToGlobal(pos))
 
         if action == right_rotate_action:
-            under_item.block.rotation = (under_item.block.rotation + 90) % 360
+            under_item._block.rotation = (under_item._block.rotation + 90) % 360
             under_item.update()
         elif action == left_rotate_action:
-            under_item.block.rotation = (under_item.block.rotation - 90) % 360
+            under_item._block.rotation = (under_item._block.rotation - 90) % 360
             under_item.update()
         elif action == reset_action:
-            under_item.block.offset_x = 0
-            under_item.block.offset_y = 0
-            under_item.block.scale = 1.0
-            if under_item.block.rotation not in [0, 180]:
-                under_item.block.scale = under_item.block.rot_90_scale
-            under_item.block.update_image()
+            under_item._block.offset_x = 0
+            under_item._block.offset_y = 0
+            under_item._block.scale = 1.0
+            if under_item._block.rotation not in [0, 180]:
+                under_item._block.scale = under_item._block.rot_90_scale
+            under_item._block.update_image()
             under_item.update()
         elif action == clear_image_action:
-            under_item.block.image_path = None
-            under_item.block.preview_img = None
-            under_item.block.full_img = None
+            under_item._block.image_path = None
+            under_item._block.preview_img = None
+            under_item._block.full_img = None
             under_item.update()
-        elif action in [a3_preview_action, a4_preview_action]:
-            if not self.dpi:
-                # screen = QtWidgets.QApplication.primaryScreen()
-                screen = screen_at_mouse()
-                dpi = screen.physicalDotsPerInch()  # 例: 96, 110, 144, 218など
-                set_canvas_scale = self.canvas_width_px / PREVIEW_CANVAS_WIDTH
-                canvas_dpi = get_a3_dpi(self.canvas_width_px)
-                if action == a4_preview_action:
-                    canvas_dpi = get_a4_dpi(self.canvas_width_px)
-                # 一旦スケールをリセットする
-                self.resetTransform()
-                self.scale(set_canvas_scale*dpi/canvas_dpi, set_canvas_scale*dpi/canvas_dpi)
+        elif action == preview_size_action:
+            set_canvas_scale = self.export_width / PREVIEW_CANVAS_WIDTH
+            screen = screen_at_mouse()
+            screen_dpi = screen.physicalDotsPerInch()  # 例: 96, 110, 144, 218など
+            canvas_dpi = self.dpi
+            # if not canvas_dpi:
+            #     # screen = QtWidgets.QApplication.primaryScreen()
+            #     canvas_dpi = get_a3_dpi(self.export_width)
+            #     if action == a4_preview_action:
+            #         canvas_dpi = get_a4_dpi(self.export_width)
+            # 一旦スケールをリセットする
+            self.resetTransform()
+            self.scale(set_canvas_scale*screen_dpi/canvas_dpi, set_canvas_scale*screen_dpi/canvas_dpi)
         elif action is fit_window_action:
-            self.fitInView(self.scene().sceneRect(), QtCore.Qt.KeepAspectRatio)
+            self.fit_window_size()
+        elif action is clear_all_image_action:
+            # 確認用のDialogを出す
+            reply = QtWidgets.QMessageBox.question(
+                self, "全ての画像をクリア",
+                "本当に全ての画像をクリアしますか？",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No)
+            if reply == QtWidgets.QMessageBox.Yes:
+                for blk in self.blocks:
+                    blk.image_path = None
+                    blk.preview_img = None
+                    blk.full_img = None
+            self.draw_layout()
+        elif action is clear_duplicate_images_action:
+            seen_paths = set()
+            for blk in self.blocks:
+                if blk.image_path and os.path.abspath(blk.image_path) in seen_paths:
+                    blk.image_path = None
+                    blk.preview_img = None
+                    blk.full_img = None
+                elif blk.image_path:
+                    seen_paths.add(os.path.abspath(blk.image_path))
+            self.draw_layout()
 
+    def fit_horizontal_window_size(self):
+        # type: () -> None
+        """Canvasのサイズを横フィットさせる"""
+        view_width = self.viewport().width()
+        scale_factor = view_width / self.canvas_width
+        self.resetTransform()
+        self.scale(scale_factor, scale_factor)
+
+    def fit_window_size(self):
+        # type: () -> None
+        """Windowサイズにフィットさせる"""
+        self.fitInView(self.scene().sceneRect(), QtCore.Qt.KeepAspectRatio)
 
     # =================================
     # Override Methods
@@ -617,6 +653,8 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
     def wheelEvent(self, event):
         # type: (QtGui.QGraphicsSceneWheelEvent) -> None
         """ホイールでスケール"""
+        if not self.wheel_zoom_flag:
+            return QtWidgets.QGraphicsView.wheelEvent(self, event)
         if bool(event.modifiers() & QtCore.Qt.ControlModifier):
             return QtWidgets.QGraphicsView.wheelEvent(self, event)
         delta = 0
@@ -636,10 +674,15 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
 
     def mousePressEvent(self, event):
         # type: (QtGui.QMouseEvent) -> None
-        """マウスプレスでパン開始"""
+        """マウスプレスでパン開始
+        """
+        self.clear_selection()
+        self.clear_selection(drop=True)
         if event.button() == QtCore.Qt.MiddleButton:
             self._pan_start_pos = event.pos()
             self.setCursor(QtCore.Qt.ClosedHandCursor)
+        # under_item = self._get_mouse_under_item()
+        # if under_item: print(under_item._block.image_path)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -657,22 +700,67 @@ class PhotoCollageView(QtWidgets.QGraphicsView):
         """マウスリリースでパン終了"""
         if event.button() == QtCore.Qt.MiddleButton:
             self.setCursor(QtCore.Qt.ArrowCursor)
+        self.clear_selection(drop=True)
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
         # type: (QtGui.QKeyEvent) -> None
         """Fキーでフィット表示"""
         if event.key() == QtCore.Qt.Key_F:
-            self.fitInView(self.scene().sceneRect(), QtCore.Qt.KeepAspectRatio)
+            self.fit_window_size()
         elif event.key() == QtCore.Qt.Key_Plus:
             item = self.get_selected_photo_brock_item()
-            item.block.rotation = (item.block.rotation + 90) % 360
+            item._block.rotation = (item._block.rotation + 90) % 360
             item.update()
         elif event.key() == QtCore.Qt.Key_Minus:
             item = self.get_selected_photo_brock_item()
-            item.block.rotation = (item.block.rotation - 90) % 360
+            item._block.rotation = (item._block.rotation - 90) % 360
             item.update()
         return super().keyPressEvent(event)
+
+    def dropEvent(self, event):
+        global DRAG_ITEM
+        # === 外部画像ファイル ===
+        if event.mimeData().hasUrls():
+            if len(event.mimeData().urls()) == 1:
+                under_mouse_item = self._get_mouse_under_item()
+                path = event.mimeData().urls()[0].toLocalFile()
+                if os.path.isfile(path) and path.lower().endswith(IMAGE_EXTS):
+                    under_mouse_item._block.image_path = path
+                    under_mouse_item._block.update_image()
+                    under_mouse_item.update()
+                    self.clear_selection()
+                    self.clear_selection(drop=True)
+                    under_mouse_item._is_selected = True
+            else:
+                image_path_list = [url.toLocalFile() for url in event.mimeData().urls()]
+                image_path_list = [path for path in image_path_list
+                                   if os.path.isfile(path) and path.lower().endswith(IMAGE_EXTS)]
+                under_mouse_item = self._get_mouse_under_item()
+                for index, image_path in enumerate(image_path_list):
+                    skip_flag = under_mouse_item is not None
+                    for item in self._photo_block_items:
+                        if skip_flag and item is under_mouse_item:
+                            if index == 0:
+                                item._block.image_path = image_path
+                                item._block.update_image()
+                                item.update()
+                                break
+                            skip_flag = False
+                            continue
+                        if skip_flag:
+                            continue
+                        if item._block.image_path:
+                            continue
+                        item._block.image_path = image_path
+                        item._block.update_image()
+                        item.update()
+                        break
+
+            event.acceptProposedAction()
+        self.update()
+        self.clear_selection(drop=True)
+        super().dropEvent(event)
 
 
 def get_a4_dpi(width_px):
