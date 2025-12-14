@@ -26,6 +26,7 @@ class ToolBarWidget(QtWidgets.QWidget):
         self.bg_color = QtGui.QColor(255, 255, 255)
         self.size_preset = QtWidgets.QComboBox()
         self.size_preset.addItems(SIZE_PRESETS.keys())
+        self.size_preset.setMaxVisibleItems(30)
 
         # =============================
         # サイズ関連
@@ -48,6 +49,7 @@ class ToolBarWidget(QtWidgets.QWidget):
         self.size_switch_cb = QtWidgets.QCheckBox("サイズ スイッチ")
         self.layout_combo = QtWidgets.QComboBox()
         self.layout_combo.addItems(LAYOUT_PRESETS.keys())
+        self.layout_combo.setMaxVisibleItems(30)
 
         self.bg_color_btn = QtWidgets.QPushButton("背景色")
         self.bg_color_btn.clicked.connect(self._choose_color)
